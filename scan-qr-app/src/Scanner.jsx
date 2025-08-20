@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { Html5Qrcode } from 'html5-qrcode';
+import { BrowserMultiFormatReader, DecodeHintType } from '@zxing/library';
 import { database } from './firebase-config';
 import { ref, push, set } from 'firebase/database';
 
@@ -12,7 +12,9 @@ function Scanner() {
   const [manualInput, setManualInput] = useState('');
   const [showManualInput, setShowManualInput] = useState(false);
   const [isCameraRunning, setIsCameraRunning] = useState(false);
-  const html5QrCodeRef = useRef(null);
+  const [videoInputDevices, setVideoInputDevices] = useState([]);
+  const [selectedDeviceId, setSelectedDeviceId] = useState(null);
+  const codeReaderRef = useRef(null);
   const fileInputRef = useRef(null);
 
   const showNotification = (message) => {
@@ -25,7 +27,7 @@ function Scanner() {
   const stopCamera = async () => {
     if (isCameraRunning) {
       try {
-        await html5QrCodeRef.current.stop();
+        codeReaderRef.current.reset();
         setIsCameraRunning(false);
       } catch (err) {
         console.error("Error stopping camera: ", err);
@@ -33,7 +35,7 @@ function Scanner() {
     }
   };
 
-  const onScanSuccess = async (decodedText, decodedResult) => {
+  const onScanSuccess = async (decodedText) => {
     setScanResult(decodedText);
     setShowScanner(false);
     await stopCamera();
@@ -56,37 +58,68 @@ function Scanner() {
     // ignore scan failure
   };
 
-  const startCamera = () => {
+  const startCamera = async (deviceId) => {
     if (!isCameraRunning) {
-      html5QrCodeRef.current.start(
-        { facingMode: "environment" },
-        {
-          fps: 10,
-          qrbox: undefined,
-        },
-        onScanSuccess,
-        onScanFailure
-      ).then(() => {
-        setIsCameraRunning(true);
-      }).catch(err => {
+      const hints = new Map();
+      const formats = [DecodeHintType.QR_CODE];
+      hints.set(DecodeHintType.POSSIBLE_FORMATS, formats);
+
+      try {
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const videoInputs = devices.filter(device => device.kind === 'videoinput');
+        setVideoInputDevices(videoInputs);
+
+        let deviceToUse = deviceId;
+        if (!deviceToUse && videoInputs.length > 0) {
+          deviceToUse = videoInputs[0].deviceId;
+          setSelectedDeviceId(videoInputs[0].deviceId);
+        }
+
+        if (deviceToUse) {
+          codeReaderRef.current.decodeFromVideoDevice(deviceToUse, 'reader', (result, err) => {
+            if (result) {
+              onScanSuccess(result.getText());
+            }
+            if (err) {
+              onScanFailure(err.message);
+            }
+          });
+          setIsCameraRunning(true);
+        } else {
+          showNotification("No video input devices found.");
+        }
+      } catch (err) {
         showNotification("Error starting camera: " + err);
-      });
+      }
+    }
+  };
+
+  const handleCameraSwitch = async () => {
+    if (videoInputDevices.length > 1) {
+      await stopCamera();
+      const currentIndex = videoInputDevices.findIndex(device => device.deviceId === selectedDeviceId);
+      const nextIndex = (currentIndex + 1) % videoInputDevices.length;
+      const nextDeviceId = videoInputDevices[nextIndex].deviceId;
+      setSelectedDeviceId(nextDeviceId);
+      startCamera(nextDeviceId);
+    } else {
+      showNotification("Only one camera found.");
     }
   };
 
   useEffect(() => {
-    if (!html5QrCodeRef.current) {
-      html5QrCodeRef.current = new Html5Qrcode("reader");
+    if (!codeReaderRef.current) {
+      codeReaderRef.current = new BrowserMultiFormatReader();
     }
 
     if (showScanner && !showManualInput && !isCameraRunning) {
-      startCamera();
+      startCamera(selectedDeviceId);
     }
 
     return () => {
       stopCamera();
     };
-  }, [showScanner, showManualInput, isCameraRunning]);
+  }, [showScanner, showManualInput, isCameraRunning, selectedDeviceId]);
 
   const handleScanAgain = () => {
     setScanResult(null);
@@ -99,13 +132,16 @@ function Scanner() {
     const file = e.target.files[0];
     if (file) {
       await stopCamera();
-      html5QrCodeRef.current.scanFile(file, true)
-        .then(decodedText => {
-          onScanSuccess(decodedText);
-        })
-        .catch(err => {
+      const reader = new FileReader();
+      reader.onload = async (event) => {
+        try {
+          const result = await codeReaderRef.current.decodeFromImageUrl(event.target.result);
+          onScanSuccess(result.getText());
+        } catch (err) {
           showNotification("Error scanning file: " + err);
-        });
+        }
+      };
+      reader.readAsDataURL(file);
     }
   };
 
@@ -140,11 +176,19 @@ function Scanner() {
           </div>
         ) : (
           <div className="relative w-full h-full flex flex-col items-center justify-center">
-            <div id="reader" className="absolute top-0 left-0 w-full h-full"></div>
+            <video id="reader" className="absolute top-0 left-0 w-full h-full" playsInline muted></video>
             <div className="absolute top-0 left-0 w-full h-full bg-black bg-opacity-50"></div>
             <div className="relative w-64 h-64">
             </div>
             <p className="absolute bottom-24 text-white text-lg bg-black bg-opacity-50 px-4 py-2 rounded-full">Hướng camera vào mã QR</p>
+            {videoInputDevices.length > 1 && (
+              <button 
+                className="absolute top-5 right-5 bg-white text-black p-2 rounded-full shadow-lg"
+                onClick={handleCameraSwitch}
+              >
+                Switch Camera
+              </button>
+            )}
             <div className="absolute bottom-5 flex flex-col gap-4 items-center">
               <input type="file" accept="image/*" ref={fileInputRef} onChange={handleFileScan} className="hidden" />
               <button className="border border-white text-white font-semibold py-3 px-8 rounded-full hover:bg-white hover:text-black transition-colors" onClick={() => fileInputRef.current.click()}>Quét từ một tệp ảnh</button>
