@@ -1,32 +1,17 @@
 import { useState } from 'react';
 import Scanner from './Scanner';
 import Stats from './Stats';
-import './App.css';
-import './Tabs.css';
+import BottomNav from './BottomNav';
 
 function App() {
   const [activeTab, setActiveTab] = useState('scanner');
 
   return (
-    <div className="App">
-      <h1>QR Code Scanner</h1>
-      <div className="tabs">
-        <button 
-          className={`tab-button ${activeTab === 'scanner' ? 'active' : ''}`}
-          onClick={() => setActiveTab('scanner')}
-        >
-          Scanner
-        </button>
-        <button 
-          className={`tab-button ${activeTab === 'stats' ? 'active' : ''}`}
-          onClick={() => setActiveTab('stats')}
-        >
-          Statistics
-        </button>
-      </div>
-      <div className="tab-content">
+    <div className="bg-gray-100 min-h-screen">
+      <main className="pb-16">
         {activeTab === 'scanner' ? <Scanner /> : <Stats />}
-      </div>
+      </main>
+      <BottomNav activeTab={activeTab} setActiveTab={setActiveTab} />
     </div>
   );
 }

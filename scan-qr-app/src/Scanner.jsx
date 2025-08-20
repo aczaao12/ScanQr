@@ -1,8 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
-import { Html5QrcodeScanner } from 'html5-qrcode';
+import { Html5Qrcode } from 'html5-qrcode';
 import { database } from './firebase-config';
 import { ref, push, set } from 'firebase/database';
-import './App.css';
 
 const NOTIFICATION_TIMEOUT = 3500; // 3.5 seconds
 
@@ -10,7 +9,11 @@ function Scanner() {
   const [scanResult, setScanResult] = useState(null);
   const [showScanner, setShowScanner] = useState(true);
   const [notificationMessage, setNotificationMessage] = useState(null);
-  const scannerRef = useRef(null);
+  const [manualInput, setManualInput] = useState('');
+  const [showManualInput, setShowManualInput] = useState(false);
+  const [isCameraRunning, setIsCameraRunning] = useState(false);
+  const html5QrCodeRef = useRef(null);
+  const fileInputRef = useRef(null);
 
   const showNotification = (message) => {
     setNotificationMessage(message);
@@ -19,11 +22,22 @@ function Scanner() {
     }, NOTIFICATION_TIMEOUT);
   };
 
-  const onScanSuccess = (decodedText, decodedResult) => {
-    setScanResult(decodedText);
-    setShowScanner(false); // Hide scanner after successful scan
+  const stopCamera = async () => {
+    if (isCameraRunning) {
+      try {
+        await html5QrCodeRef.current.stop();
+        setIsCameraRunning(false);
+      } catch (err) {
+        console.error("Error stopping camera: ", err);
+      }
+    }
+  };
 
-    // Save to Firebase Realtime Database
+  const onScanSuccess = async (decodedText, decodedResult) => {
+    setScanResult(decodedText);
+    setShowScanner(false);
+    await stopCamera();
+
     const scansRef = ref(database, 'scans');
     const newScanRef = push(scansRef);
     set(newScanRef, {
@@ -42,57 +56,115 @@ function Scanner() {
     // ignore scan failure
   };
 
-  useEffect(() => {
-    if (showScanner) {
-      const scanner = new Html5QrcodeScanner(
-        "reader",
+  const startCamera = () => {
+    if (!isCameraRunning) {
+      html5QrCodeRef.current.start(
+        { facingMode: "environment" },
         {
           fps: 10,
           qrbox: { width: 250, height: 250 },
         },
-        false // verbose
-      );
+        onScanSuccess,
+        onScanFailure
+      ).then(() => {
+        setIsCameraRunning(true);
+      }).catch(err => {
+        showNotification("Error starting camera: " + err);
+      });
+    }
+  };
 
-      scanner.render(onScanSuccess, onScanFailure);
-      scannerRef.current = scanner; // Store the new scanner instance in the ref
+  useEffect(() => {
+    if (!html5QrCodeRef.current) {
+      html5QrCodeRef.current = new Html5Qrcode("reader");
+    }
+
+    if (showScanner && !showManualInput && !isCameraRunning) {
+      startCamera();
     }
 
     return () => {
-      if (scannerRef.current) {
-        scannerRef.current.clear().catch(error => {
-          console.error("Failed to clear html5QrcodeScanner on unmount:", error);
-        });
-        scannerRef.current = null; // Clear the ref
-      }
+      stopCamera();
     };
-  }, [showScanner]); // Re-run effect when showScanner changes
+  }, [showScanner, showManualInput, isCameraRunning]);
 
   const handleScanAgain = () => {
-    console.log("Resetting scanner for new scan...");
     setScanResult(null);
     setShowScanner(true);
-    setNotificationMessage(null); // Clear notification when scanning again
+    setShowManualInput(false);
+    setNotificationMessage(null);
   };
 
+  const handleFileScan = async (e) => {
+    const file = e.target.files[0];
+    if (file) {
+      await stopCamera();
+      html5QrCodeRef.current.scanFile(file, true)
+        .then(decodedText => {
+          onScanSuccess(decodedText);
+        })
+        .catch(err => {
+          showNotification("Error scanning file: " + err);
+        });
+    }
+  };
+
+  const handleManualInputChange = (e) => {
+    setManualInput(e.target.value);
+  };
+
+  const handleManualSubmit = () => {
+    if (manualInput.trim() !== '') {
+      onScanSuccess(manualInput);
+    }
+  };
+
+  const handleManualInputClick = async () => {
+    await stopCamera();
+    setShowManualInput(true);
+  }
+
   return (
-    <div className="App">
-      <h1>QR Code Scanner</h1>
-      {notificationMessage && (
-        <div className={`notification-message ${notificationMessage.includes("Error") ? 'error' : ''}`}>
-          {notificationMessage}
+    <div className="flex flex-col items-center justify-center bg-black min-h-screen">
+      {showScanner ? (
+        showManualInput ? (
+          <div className="flex flex-col items-center gap-4 w-full max-w-md p-5">
+            <textarea 
+              className="w-full h-40 p-3 border border-gray-300 rounded-lg resize-y bg-white text-black"
+              placeholder="Enter QR code data..."
+              value={manualInput}
+              onChange={handleManualInputChange}
+            />
+            <button className="w-full bg-blue-500 text-white font-bold py-3 px-6 rounded-full hover:bg-blue-600 transition-colors" onClick={handleManualSubmit}>Submit</button>
+            <a href="#" className="text-sm text-gray-400 underline mt-2" onClick={() => setShowManualInput(false)}>Back to Scanner</a>
+          </div>
+        ) : (
+          <div className="relative w-full h-full flex flex-col items-center justify-center">
+            <div id="reader" className="absolute top-0 left-0 w-full h-full"></div>
+            <div className="absolute top-0 left-0 w-full h-full bg-black bg-opacity-50"></div>
+            <div className="relative w-64 h-64">
+            </div>
+            <p className="absolute bottom-24 text-white text-lg bg-black bg-opacity-50 px-4 py-2 rounded-full">Hướng camera vào mã QR</p>
+            <div className="absolute bottom-5 flex flex-col gap-4 items-center">
+              <input type="file" accept="image/*" ref={fileInputRef} onChange={handleFileScan} className="hidden" />
+              <button className="border border-white text-white font-semibold py-3 px-8 rounded-full hover:bg-white hover:text-black transition-colors" onClick={() => fileInputRef.current.click()}>Quét từ một tệp ảnh</button>
+              <a href="#" className="text-sm text-gray-300 underline" onClick={handleManualInputClick}>Nhập mã thủ công</a>
+            </div>
+          </div>
+        )
+      ) : (
+        <div className="flex flex-col items-center gap-5 w-full max-w-md p-5">
+          <div className="bg-white p-6 rounded-lg shadow-md w-full text-center">
+            <p className="text-lg text-gray-600">Scanned Data:</p>
+            <p className="text-2xl font-bold text-blue-600 break-words">{scanResult}</p>
+          </div>
+          <button onClick={handleScanAgain} className="w-full bg-blue-500 text-white font-bold py-4 px-8 rounded-full hover:bg-blue-600 transition-colors">Scan New QR</button>
         </div>
       )}
-      {showScanner ? (
-        <div id="reader" style={{ width: '100%', maxWidth: '500px', margin: 'auto' }}></div>
-      ) : (
-        <div className="scan-result-container">
-          <div className="scan-result">
-            <p>Scanned Data:</p>
-            <p className="result-text">{scanResult}</p>
-          </div>
-          <button onClick={handleScanAgain} className="scan-again-button">
-            Scan New QR
-          </button>
+
+      {notificationMessage && (
+        <div className={`fixed bottom-20 left-1/2 -translate-x-1/2 px-6 py-3 rounded-lg shadow-lg text-white ${notificationMessage.includes("Error") ? 'bg-red-500' : 'bg-green-500'}`}>
+          {notificationMessage}
         </div>
       )}
     </div>
